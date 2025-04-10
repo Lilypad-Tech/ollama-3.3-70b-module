@@ -1,54 +1,71 @@
 #!/bin/bash
-set -e
 
-# Start ollama in the background
-nohup ollama serve >/dev/null 2>&1 &
-OLLAMA_PID=$!
+# Create output directory if it doesn't exist
+mkdir -p /outputs
 
-# Wait for ollama to start
-until curl -s http://127.0.0.1:11434 > /dev/null; do
-  echo "Waiting for ollama to start..."
-  sleep 2
+# Parse base64 input argument and decode to JSON
+echo "Raw input (base64): $1" >&2
+input_json=$(echo "$1" | base64 -d || echo "{}")
+
+# Start the ollama server in the background
+echo "Starting Ollama server..." >&2
+nohup bash -c "ollama serve &" >&2
+
+# Wait for server with timeout
+timeout=30
+start_time=$(date +%s)
+while ! curl -s http://127.0.0.1:11434 > /dev/null; do
+    current_time=$(date +%s)
+    elapsed=$((current_time - start_time))
+    if [ $elapsed -gt $timeout ]; then
+        echo "Timeout waiting for Ollama server" >&2
+        exit 1
+    fi
+    echo "Waiting for ollama to start... ($elapsed seconds)" >&2
+    sleep 1
 done
 
-echo "Ollama service started"
+echo "Ollama server started" >&2
 
-# Function to clean up on exit
-cleanup() {
-  echo "Shutting down ollama..."
-  kill $OLLAMA_PID
-  wait $OLLAMA_PID 2>/dev/null || true
-  echo "Ollama shutdown complete"
-}
+# Use the OpenAI-compatible endpoint
+endpoint="/v1/chat/completions"
 
-# Set trap to ensure cleanup on exit
-trap cleanup EXIT
+# Pass through the input JSON, only setting essential defaults
+request=$(echo "$input_json" | jq '
+  # Set essential defaults if missing
+  . + {
+    model: (.model // "'$MODEL_ID'"),
+    messages: (.messages // [{"role":"user","content":"What is bitcoin?"}]),
+    stream: false
+  }
+')
 
-# Get the input JSON
-INPUT_JSON=${1:-'{}'}
-MODEL_ID=${MODEL_ID:-"llama3.3:70b-instruct-q4_0"}
+# Log the request for debugging
+echo "Using OpenAI-compatible endpoint: $endpoint" >&2
+echo "Request: $request" >&2
 
-# Parse the messages from the input JSON
-if echo "$INPUT_JSON" | jq -e '.messages' >/dev/null 2>&1; then
-  # Extract the messages for API format
-  MESSAGES=$(echo "$INPUT_JSON" | jq -c '.messages')
-  
-  # Prepare the request to Ollama API
-  REQUEST=$(jq -n --arg model "$MODEL_ID" --argjson messages "$MESSAGES" '{model: $model, messages: $messages}')
-  
-  # Call the Ollama API
-  echo "Calling Ollama API with model: $MODEL_ID"
-  RESPONSE=$(curl -s -X POST http://localhost:11434/api/chat -d "$REQUEST")
-  
-  # Save the response to the output file
-  echo "$RESPONSE" > /outputs/response.json
-  echo "Response saved to /outputs/response.json"
-  
-  # Extract and output just the assistant's message content
-  ASSISTANT_MESSAGE=$(echo "$RESPONSE" | jq -r '.message.content')
-  echo -e "\nModel response:\n$ASSISTANT_MESSAGE"
-else
-  echo "Error: Input JSON does not contain 'messages' field"
-  echo '{"error": "Input JSON does not contain messages field"}' > /outputs/response.json
-  exit 1
-fi
+# Make the API call to Ollama using the OpenAI-compatible endpoint
+echo "Making request to Ollama..." >&2
+response=$(curl -s "http://127.0.0.1:11434$endpoint" \
+  -H "Content-Type: application/json" \
+  -d "$request")
+
+# Save debug info
+{
+  echo "=== Debug Info ===" 
+  echo "Input (base64): $1"
+  echo "Decoded input: $input_json"
+  echo "Endpoint used: $endpoint"
+  echo "Request: $request"
+  echo "Response: "
+  echo "$response"
+  echo "=== Server Status ==="
+  echo "Ollama version: $(ollama --version)"
+  echo "Model list: $(ollama list)"
+} > "/outputs/debug.log"
+
+# Save and output the response
+echo "$response" > "/outputs/response.json"
+echo "$response"
+
+exit 0 

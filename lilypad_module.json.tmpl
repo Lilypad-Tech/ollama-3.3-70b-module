@@ -1,10 +1,12 @@
-cat > ollama-3.3-70b-module.json << 'EOF'
 {
   "machine": {
     "gpu": 1,
     "cpu": 8000,
     "ram": 16000
   },
+  "gpus": [ 
+    { "vram": 40960 } 
+  ],
   "job": {
     "APIVersion": "V1beta1",
     "Spec": {
@@ -40,4 +42,3 @@ cat > ollama-3.3-70b-module.json << 'EOF'
     }
   }
 }
-EOF
